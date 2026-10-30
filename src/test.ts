@@ -107,6 +107,62 @@ async function runTests(): Promise<void> {
     passed++;
   }
 
+  // ── Test 3b: export recall fidelity on compress ──
+  console.error(`\n${INFO} Test 3b: gate_compress_file export recall fixtures`);
+  try {
+    const fixtureDir = path.resolve(process.cwd(), "test-fixtures/export-recall");
+    const fixtureFiles = [
+      "esm.ts",
+      "cjs.cjs",
+      "cjs.js",
+      "reexport-barrel.ts",
+      "express-index.js",
+    ];
+    const RECALL_THRESHOLD = 0.95;
+    for (const name of fixtureFiles) {
+      const filePath = path.join(fixtureDir, name);
+      for (const depth of ["signature", "structure"] as const) {
+        const result = await handleCompressFile({ filePath, depth });
+        if (!result.fidelity) {
+          throw new Error(`${name} depth=${depth}: missing fidelity block`);
+        }
+        if (result.fidelity.exportCount === 0) {
+          throw new Error(`${name} depth=${depth}: expected exports in fixture`);
+        }
+        if (
+          result.fidelity.exportRecall === null ||
+          result.fidelity.exportRecall < RECALL_THRESHOLD
+        ) {
+          throw new Error(
+            `${name} depth=${depth}: recall ${result.fidelity.exportRecall} missed ${result.fidelity.symbolsMissed.join(",")}`
+          );
+        }
+      }
+    }
+    const sample = await handleCompressFile({
+      filePath: path.join(fixtureDir, "express-index.js"),
+      depth: "signature",
+    });
+    if (!sample.fidelity) {
+      throw new Error("express-index.js: missing fidelity block");
+    }
+    const cjsNoise = sample.fidelity.symbolsPresent.filter(
+      (s) => s === "exports" || s === "module"
+    );
+    if (cjsNoise.length > 0) {
+      throw new Error(
+        `express-index.js symbolsPresent must not include CJS keywords: ${cjsNoise.join(",")}`
+      );
+    }
+    console.error(
+      `  ${PASS} fixture recall ≥ ${RECALL_THRESHOLD * 100}% (sample fidelity: ${JSON.stringify(sample.fidelity)})`
+    );
+    passed++;
+  } catch (err) {
+    console.error(`  ${FAIL} Error: ${err}`);
+    failed++;
+  }
+
   // ── Test 4: gate_graph_query (stats) ──
   console.error(`\n${INFO} Test 4: gate_graph_query (stats — build graph)`);
   try {
@@ -1286,7 +1342,7 @@ async function runTests(): Promise<void> {
       !config.args
         .find((arg) => arg.startsWith("--allow-scripts="))
         ?.includes("better-sqlite3") ||
-      !config.args.includes("--package=@gatemcp/cli@0.5.8") ||
+      !config.args.includes("--package=@gatemcp/cli@0.5.9") ||
       config.args.slice(-2).join(" ") !== "-- gatemcp"
     ) {
       throw new Error("plugin server command is not an explicit pinned npm exec");
@@ -1717,8 +1773,8 @@ async function runTests(): Promise<void> {
     if (init.toolMode !== "catalog" && init.toolMode !== "full") {
       throw new Error(`unexpected toolMode ${init.toolMode}`);
     }
-    if (init.version !== "0.5.8") {
-      throw new Error(`expected version 0.5.8 got ${init.version}`);
+    if (init.version !== "0.5.9") {
+      throw new Error(`expected version 0.5.9 got ${init.version}`);
     }
     console.error(`  ${PASS} toolMode=${init.toolMode} version=${init.version}`);
     passed++;

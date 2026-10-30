@@ -21,6 +21,10 @@ import { safeResolveExistingFile } from "../lib/pathGuard.js";
 import { resolvePathRoot } from "../lib/cacheScope.js";
 import logger from "../lib/logger.js";
 import type { CompressionDepth, CompressFileResult } from "../types.js";
+import {
+  buildExportTruthFromSource,
+  scoreExportRecallInView,
+} from "../lib/validation.js";
 import { checkCache, storeInCache } from "./dedupContext.js";
 import { recordCompressionMeasurement } from "../lib/sessionMetrics.js";
 
@@ -39,6 +43,43 @@ function usesStructureOnly(language: string, depth: CompressionDepth): boolean {
   if (depth === "structure") return true;
   if (STRUCTURE_ONLY_LANGS.has(language) && depth !== "full") return true;
   return false;
+}
+
+
+function attachExportFidelity(
+  result: CompressFileResult,
+  source: string
+): CompressFileResult {
+  if (result.type !== "signature" && result.type !== "structure") {
+    return result;
+  }
+  const { symbols, truthSource } = buildExportTruthFromSource(
+    source,
+    result.language
+  );
+  if (symbols.length === 0) {
+    return {
+      ...result,
+      fidelity: {
+        exportCount: 0,
+        exportRecall: null,
+        symbolsPresent: [],
+        symbolsMissed: [],
+        truthSource,
+      },
+    };
+  }
+  const scored = scoreExportRecallInView(result.content, symbols);
+  return {
+    ...result,
+    fidelity: {
+      exportCount: symbols.length,
+      exportRecall: scored.recall,
+      symbolsPresent: scored.symbolsPresent,
+      symbolsMissed: scored.symbolsMissed,
+      truthSource,
+    },
+  };
 }
 
 function withFileMetrics(
@@ -128,7 +169,13 @@ export async function handleCompressFile(args: {
       language,
       resolvedRoot
     );
-    if (cached) return finish(cacheHitResult(cached), true);
+    if (cached) {
+      const cachedSource = await fs.promises.readFile(filePath, "utf-8");
+      return finish(
+        attachExportFidelity(cacheHitResult(cached), cachedSource),
+        true
+      );
+    }
   }
 
   const fullContent = await fs.promises.readFile(filePath, "utf-8");
@@ -269,7 +316,8 @@ function processStructure(
     (extraNote ? `${extraNote} ` : "") +
     `Structure-only view for ${language} (${counts.join(", ") || "outline"}).`;
 
-  return withFileMetrics({
+  return attachExportFidelity(
+    withFileMetrics({
     type: "structure",
     content,
     language,
@@ -278,7 +326,9 @@ function processStructure(
     savingsPercent: metrics.savingsPercent,
     expanded: metrics.expanded,
     note: formatSavingsNote(metrics, detail),
-  });
+  }),
+    source
+  );
 }
 
 function processSignature(
@@ -305,19 +355,22 @@ function processSignature(
     sig.exports.length > 0 ? `${sig.exports.length} exports` : "",
   ].filter(Boolean);
 
-  return withFileMetrics({
-    type: "signature",
-    content,
-    language,
-    originalTokens: metrics.originalTokens,
-    optimizedTokens: metrics.optimizedTokens,
-    savingsPercent: metrics.savingsPercent,
-    expanded: metrics.expanded,
-    note: formatSavingsNote(
-      metrics,
-      `Extracted ${counts.join(", ") || "structural signatures"} from ${language} file.`
-    ),
-  });
+  return attachExportFidelity(
+    withFileMetrics({
+      type: "signature",
+      content,
+      language,
+      originalTokens: metrics.originalTokens,
+      optimizedTokens: metrics.optimizedTokens,
+      savingsPercent: metrics.savingsPercent,
+      expanded: metrics.expanded,
+      note: formatSavingsNote(
+        metrics,
+        `Extracted ${counts.join(", ") || "structural signatures"} from ${language} file.`
+      ),
+    }),
+    source
+  );
 }
 
 function hasStructuralSignal(sig: ReturnType<typeof extractSignatures>): boolean {

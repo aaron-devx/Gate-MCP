@@ -102,7 +102,10 @@ export function buildGroundTruth(filePath: string): GroundTruth {
   const language = detectLanguage(filePath);
   const signature = extractSignatures(rawSource, language);
   const compressedView = formatSignature(signature, language);
-  const exportedSymbols = canonicalExportNames(signature);
+  const { symbols: exportedSymbols } = buildExportTruthFromSource(
+    rawSource,
+    language
+  );
   const rawTokens = countTextTokens(rawSource);
   const compressedTokens = countTextTokens(compressedView);
   const savings =
@@ -132,15 +135,30 @@ export function buildGroundTruth(filePath: string): GroundTruth {
  * Falls back to function/class names when exports are missing (CJS modules,
  * default-only exports).
  */
+/** CJS/keyword identifiers that must never appear as export-truth symbols. */
+const EXPORT_TRUTH_NOISE = new Set([
+  "exports",
+  "module",
+  "require",
+  "__dirname",
+  "__filename",
+]);
+
+function isExportTruthNoise(name: string): boolean {
+  return EXPORT_TRUTH_NOISE.has(name);
+}
+
 function canonicalExportNames(sig: FileSignature): string[] {
   const names = new Set<string>();
   for (const e of sig.exports) {
-    const stripped = e
-      .replace(/^export\s+(default\s+)?(async\s+)?/, "")
-      .replace(/^(type|interface|const|let|var|function|class|enum|namespace)\s+/, "");
-    const match = stripped.match(/^([A-Za-z_$][\w$]*)/);
-    if (match) names.add(match[1]);
-    // Also support "export { foo, bar }" patterns.
+    const cjsNamed = e.match(/^exports\.([A-Za-z_$][\w$]*)\s*=/);
+    if (cjsNamed) {
+      names.add(cjsNamed[1]);
+      continue;
+    }
+    if (/^module\.exports\s*=/.test(e.trim())) {
+      continue;
+    }
     const groupMatch = e.match(/export\s*\{\s*([^}]+)\}/);
     if (groupMatch) {
       for (const item of groupMatch[1].split(",")) {
@@ -148,20 +166,206 @@ function canonicalExportNames(sig: FileSignature): string[] {
           .trim()
           .replace(/\s+as\s+\w+/, "")
           .match(/^([A-Za-z_$][\w$]*)/);
-        if (cleaned) names.add(cleaned[1]);
+        if (cleaned && !isExportTruthNoise(cleaned[1])) names.add(cleaned[1]);
       }
+      continue;
     }
-  }
-  // Augment with function + class definitions in case exports are sparse.
-  for (const fn of sig.functions) {
-    const m = fn.match(/^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/);
-    if (m) names.add(m[1]);
-  }
-  for (const cls of sig.classes) {
-    const m = cls.match(/^(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/);
-    if (m) names.add(m[1]);
+    const stripped = e
+      .replace(/^export\s+(default\s+)?(async\s+)?/, "")
+      .replace(
+        /^(type|interface|const|let|var|function|class|enum|namespace)\s+/,
+        ""
+      );
+    const match = stripped.match(/^([A-Za-z_$][\w$]*)/);
+    if (match && !isExportTruthNoise(match[1])) names.add(match[1]);
   }
   return Array.from(names).sort();
+}
+
+function stripSourceComments(source: string): string {
+  return source
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+function extractCjsPatternSymbols(source: string): Set<string> {
+  const symbols = new Set<string>();
+  const stripped = stripSourceComments(source);
+  const patterns: RegExp[] = [
+    /^\s*module\.exports\.([A-Za-z_$][\w$]*)\s*=/gm,
+    /^\s*exports\.([A-Za-z_$][\w$]*)\s*=/gm,
+    /^\s*module\.exports\s*=\s*(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/gm,
+    /^\s*module\.exports\s*=\s*([A-Za-z_$][\w$]*)\s*;/gm,
+  ];
+  for (const pat of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pat.exec(stripped)) !== null) {
+      if (m[1] && !isExportTruthNoise(m[1])) symbols.add(m[1]);
+    }
+  }
+  const objectExportRe = /^\s*module\.exports\s*=\s*\{([^}]+)\}/gm;
+  let om: RegExpExecArray | null;
+  while ((om = objectExportRe.exec(stripped)) !== null) {
+    for (const piece of om[1].split(",")) {
+      const key = piece
+        .trim()
+        .split(":")[0]
+        ?.trim()
+        .match(/^([A-Za-z_$][\w$]*)/);
+      if (key && !isExportTruthNoise(key[1])) symbols.add(key[1]);
+    }
+  }
+  return symbols;
+}
+
+
+function augmentAstPublicMembers(
+  signature: FileSignature,
+  merged: Set<string>
+): void {
+  for (const fn of signature.functions) {
+    const m = fn.match(/^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/);
+    if (m && !isExportTruthNoise(m[1])) merged.add(m[1]);
+  }
+  for (const cls of signature.classes) {
+    const m = cls.match(/^(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/);
+    if (m && !isExportTruthNoise(m[1])) merged.add(m[1]);
+  }
+}
+
+function extractExportBlockSymbols(source: string): Set<string> {
+  const symbols = new Set<string>();
+  const stripped = stripSourceComments(source);
+  const exportBlockRe =
+    /^\s*export\s*\{([^}]+)\}(?:\s*from\s+["'][^"']+["'])?/gm;
+  let bm: RegExpExecArray | null;
+  while ((bm = exportBlockRe.exec(stripped)) !== null) {
+    for (const piece of bm[1].split(",")) {
+      const cleaned = piece.trim();
+      if (!cleaned) continue;
+      const parts = cleaned.split(/\s+as\s+/);
+      const exported = (parts[1] ?? parts[0]).trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(exported)) symbols.add(exported);
+    }
+  }
+  return symbols;
+}
+
+function extractEsmDeclarationSymbols(source: string): Set<string> {
+  const symbols = new Set<string>();
+  const stripped = stripSourceComments(source);
+  const esmPatterns: RegExp[] = [
+    /^\s*export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+interface\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+type\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+enum\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*export\s+default\s+(?:async\s+)?(?:function\s*\*?\s+)?([A-Za-z_$][\w$]*)/gm,
+  ];
+  for (const pat of esmPatterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pat.exec(stripped)) !== null) symbols.add(m[1]);
+  }
+  return symbols;
+}
+
+export type ExportTruthSource = "ast" | "cjs" | "mixed" | "none";
+
+/**
+ * Unified export ground truth: AST signatures plus CJS / re-export regex coverage.
+ */
+export function buildExportTruthFromSource(
+  source: string,
+  language: string
+): { symbols: string[]; truthSource: ExportTruthSource } {
+  const signature = extractSignatures(
+    source,
+    language as Parameters<typeof extractSignatures>[1]
+  );
+  const astSymbols = new Set(canonicalExportNames(signature));
+  const cjsSymbols = extractCjsPatternSymbols(source);
+  const blockSymbols = extractExportBlockSymbols(source);
+  const esmRegexSymbols = extractEsmDeclarationSymbols(source);
+  const merged = new Set<string>([
+    ...astSymbols,
+    ...cjsSymbols,
+    ...blockSymbols,
+    ...esmRegexSymbols,
+  ]);
+  augmentAstPublicMembers(signature, merged);
+
+  let truthSource: ExportTruthSource;
+  if (merged.size === 0) truthSource = "none";
+  else if (astSymbols.size === 0) truthSource = "cjs";
+  else if (cjsSymbols.size === 0 && blockSymbols.size === 0) truthSource = "ast";
+  else truthSource = "mixed";
+
+  const symbols = Array.from(merged)
+    .filter((s) => !isExportTruthNoise(s))
+    .sort();
+
+  return {
+    symbols,
+    truthSource,
+  };
+}
+
+function exportSymbolBoundaryRegex(sym: string): RegExp {
+  const escaped = escapeRegex(sym);
+  if (sym.startsWith("$")) {
+    return new RegExp(`(?:^|(?<![A-Za-z0-9_]))${escaped}(?![A-Za-z0-9_])`);
+  }
+  return new RegExp(`\\b${escaped}\\b`);
+}
+
+function exportSymbolPresentInCompressedView(
+  compressed: string,
+  sym: string
+): boolean {
+  if (exportSymbolBoundaryRegex(sym).test(compressed)) return true;
+  const escaped = escapeRegex(sym);
+  const cjsMember = sym.startsWith("$")
+    ? new RegExp(
+        `(?:^|(?<![A-Za-z0-9_]))exports\\.${escaped}(?![A-Za-z0-9_])`
+      )
+    : new RegExp(`\\bexports\\.${escaped}\\b`);
+  if (cjsMember.test(compressed)) return true;
+  const modMember = sym.startsWith("$")
+    ? new RegExp(
+        `(?:^|(?<![A-Za-z0-9_]))module\\.exports\\.${escaped}(?![A-Za-z0-9_])`
+      )
+    : new RegExp(`\\bmodule\\.exports\\.${escaped}\\b`);
+  if (modMember.test(compressed)) return true;
+  return false;
+}
+
+/**
+ * Export recall in a compressed signature/structure view (fidelity-test algorithm).
+ */
+export function scoreExportRecallInView(
+  compressed: string,
+  truthSymbols: string[]
+): {
+  recall: number;
+  symbolsPresent: string[];
+  symbolsMissed: string[];
+} {
+  if (truthSymbols.length === 0) {
+    return { recall: 1, symbolsPresent: [], symbolsMissed: [] };
+  }
+  const symbolsPresent: string[] = [];
+  const symbolsMissed: string[] = [];
+  for (const sym of truthSymbols) {
+    if (exportSymbolPresentInCompressedView(compressed, sym)) {
+      symbolsPresent.push(sym);
+    } else symbolsMissed.push(sym);
+  }
+  return {
+    recall: symbolsPresent.length / truthSymbols.length,
+    symbolsPresent,
+    symbolsMissed,
+  };
 }
 
 // ─── Prompt synthesis ───────────────────────────────────────────────────────

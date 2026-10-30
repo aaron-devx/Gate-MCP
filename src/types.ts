@@ -96,6 +96,17 @@ export type MetricsBaseline = "file" | "GRAPH_REPORT.md" | "symbol_estimate";
 /** Savings compare tool payloads only — never host/Cursor billing. */
 export type MetricsBillingScope = "tool_payload_only";
 
+export type ExportTruthSource = "ast" | "cjs" | "mixed" | "none";
+
+export interface CompressFileExportFidelity {
+  exportCount: number;
+  /** Fraction of ground-truth exports visible in compressed view; null when exportCount is 0. */
+  exportRecall: number | null;
+  symbolsPresent: string[];
+  symbolsMissed: string[];
+  truthSource: ExportTruthSource;
+}
+
 export interface CompressFileResult {
   type: "signature" | "summary" | "structure" | "full";
   content: string;
@@ -109,6 +120,8 @@ export interface CompressFileResult {
   baseline?: MetricsBaseline;
   /** Explicit: savings are not Cursor billed tokens. */
   billingScope?: MetricsBillingScope;
+  /** Export recall vs unified ground truth (signature + structure depths only). */
+  fidelity?: CompressFileExportFidelity;
   note: string;
 }
 

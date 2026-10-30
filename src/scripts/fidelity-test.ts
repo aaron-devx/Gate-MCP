@@ -28,6 +28,10 @@ import {
   extractSignatures,
   formatSignature,
 } from "../lib/astParser.js";
+import {
+  buildExportTruthFromSource,
+  scoreExportRecallInView,
+} from "../lib/validation.js";
 import type { SupportedLanguage } from "../types.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -72,79 +76,6 @@ function walkSync(root: string, files: string[] = []): string[] {
   return files;
 }
 
-/**
- * Extract ground-truth exported symbol names from raw JS/TS source.
- *
- * Covers: export function|class|const|let|var|interface|type|enum,
- * export default <name>, named-export blocks { foo, bar },
- * and CommonJS module.exports.<name> = ...
- *
- * Comments and string literals can produce false positives. Regex strips
- * line comments before matching to reduce noise.
- */
-function extractTruthSymbols(source: string): Set<string> {
-  const symbols = new Set<string>();
-
-  const stripped = source
-    .replace(/\/\/.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "");
-
-  const patterns: RegExp[] = [
-    /^\s*export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/gm,
-    /^\s*export\s+(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/gm,
-    /^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/gm,
-    /^\s*export\s+interface\s+([A-Za-z_$][\w$]*)/gm,
-    /^\s*export\s+type\s+([A-Za-z_$][\w$]*)/gm,
-    /^\s*export\s+enum\s+([A-Za-z_$][\w$]*)/gm,
-    /^\s*export\s+default\s+(?:async\s+)?(?:function\s*\*?\s+)?([A-Za-z_$][\w$]*)/gm,
-    /^\s*module\.exports\.([A-Za-z_$][\w$]*)\s*=/gm,
-    /^\s*exports\.([A-Za-z_$][\w$]*)\s*=/gm,
-  ];
-
-  for (const pat of patterns) {
-    let m: RegExpExecArray | null;
-    while ((m = pat.exec(stripped)) !== null) symbols.add(m[1]);
-  }
-
-  // Named export blocks: export { foo, bar as baz }
-  const blockRe = /^\s*export\s*\{([^}]+)\}/gm;
-  let m: RegExpExecArray | null;
-  while ((m = blockRe.exec(stripped)) !== null) {
-    for (const piece of m[1].split(",")) {
-      const cleaned = piece.trim();
-      if (!cleaned) continue;
-      const parts = cleaned.split(/\s+as\s+/);
-      const exported = (parts[1] ?? parts[0]).trim();
-      if (/^[A-Za-z_$][\w$]*$/.test(exported)) symbols.add(exported);
-    }
-  }
-
-  return symbols;
-}
-
-/**
- * Pull identifiers out of the compressed signature view.
- *
- * formatSignature emits lines like:
- *   import { foo } from "./bar"
- *   class Foo
- *   interface Bar
- *   function baz(a: number): void
- *   const QUUX
- *
- * We extract any [A-Za-z_$][\w$]* identifier from the compressed output and
- * return the set. Over-eager (will include parameter names, types, etc.) but
- * that's fine for a RECALL test — the question is whether the truth symbols
- * appear, not whether nothing else does.
- */
-function extractCompressedSymbols(compressed: string): Set<string> {
-  const symbols = new Set<string>();
-  const idRe = /[A-Za-z_$][\w$]*/g;
-  let m: RegExpExecArray | null;
-  while ((m = idRe.exec(compressed)) !== null) symbols.add(m[0]);
-  return symbols;
-}
-
 function measureFile(filePath: string): FileResult | null {
   let raw: string;
   try {
@@ -155,8 +86,8 @@ function measureFile(filePath: string): FileResult | null {
   if (raw.length === 0) return null;
 
   const language = detectLanguage(filePath);
-  const truth = extractTruthSymbols(raw);
-  if (truth.size === 0) return null; // no exports = nothing to measure
+  const { symbols: truthSymbols } = buildExportTruthFromSource(raw, language);
+  if (truthSymbols.length === 0) return null; // no exports = nothing to measure
 
   let compressed = "";
   try {
@@ -165,28 +96,20 @@ function measureFile(filePath: string): FileResult | null {
   } catch {
     compressed = "";
   }
-  const compressedSet = extractCompressedSymbols(compressed);
-
-  const found: string[] = [];
-  const missed: string[] = [];
-  for (const sym of truth) {
-    if (compressedSet.has(sym)) found.push(sym);
-    else missed.push(sym);
-  }
-
-  const recall = truth.size > 0 ? found.length / truth.size : 1;
-  const precision = compressedSet.size > 0
-    ? found.length / compressedSet.size
-    : 0;
+  const scored = scoreExportRecallInView(compressed, truthSymbols);
+  const compressedSet = new Set(
+    compressed.match(/[A-Za-z_$][\w$]*/g) ?? []
+  );
 
   return {
     filePath,
     language,
-    truthSymbols: Array.from(truth),
+    truthSymbols,
     compressedSymbols: Array.from(compressedSet),
-    recall,
-    precision,
-    missed,
+    recall: scored.recall,
+    precision:
+      compressedSet.size > 0 ? scored.symbolsPresent.length / compressedSet.size : 0,
+    missed: scored.symbolsMissed,
   };
 }
 
