@@ -39,6 +39,7 @@ import {
 } from "./astParser.js";
 import { countTextTokens } from "./tokenCounter.js";
 import type { FileSignature } from "../types.js";
+import { scanPrototypeExports } from "./prototypeExports.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -234,30 +235,6 @@ function augmentAstPublicMembers(
 }
 
 
-function extractPrototypeAssignmentSymbols(source: string): Set<string> {
-  const symbols = new Set<string>();
-  const stripped = stripSourceComments(source);
-  const re =
-    /^\s*([A-Za-z_$][\w$]{1,})\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function/gm;
-  const skip = new Set([
-    "module",
-    "exports",
-    "require",
-    "Object",
-    "Function",
-    "Number",
-    "String",
-    "Array",
-    "Boolean",
-  ]);
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(stripped)) !== null) {
-    if (skip.has(m[1]) || isExportTruthNoise(m[2])) continue;
-    symbols.add(`${m[1]}.${m[2]}`);
-  }
-  return symbols;
-}
-
 function extractExportBlockSymbols(source: string): Set<string> {
   const symbols = new Set<string>();
   const stripped = stripSourceComments(source);
@@ -303,7 +280,11 @@ export type ExportTruthSource = "ast" | "cjs" | "mixed" | "none";
 export function buildExportTruthFromSource(
   source: string,
   language: string
-): { symbols: string[]; truthSource: ExportTruthSource } {
+): {
+  symbols: string[];
+  truthSource: ExportTruthSource;
+  dynamicExportsSuspected: boolean;
+} {
   const signature = extractSignatures(
     source,
     language as Parameters<typeof extractSignatures>[1]
@@ -312,7 +293,8 @@ export function buildExportTruthFromSource(
   const cjsSymbols = extractCjsPatternSymbols(source);
   const blockSymbols = extractExportBlockSymbols(source);
   const esmRegexSymbols = extractEsmDeclarationSymbols(source);
-  const protoSymbols = extractPrototypeAssignmentSymbols(source);
+  const protoScan = scanPrototypeExports(source);
+  const protoSymbols = protoScan.symbols;
   const merged = new Set<string>([
     ...astSymbols,
     ...cjsSymbols,
@@ -334,6 +316,7 @@ export function buildExportTruthFromSource(
   return {
     symbols,
     truthSource,
+    dynamicExportsSuspected: protoScan.dynamicExportsSuspected,
   };
 }
 

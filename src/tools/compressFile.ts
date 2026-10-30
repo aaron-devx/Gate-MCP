@@ -53,10 +53,8 @@ function attachExportFidelity(
   if (result.type !== "signature" && result.type !== "structure") {
     return result;
   }
-  const { symbols, truthSource } = buildExportTruthFromSource(
-    source,
-    result.language
-  );
+  const { symbols, truthSource, dynamicExportsSuspected } =
+    buildExportTruthFromSource(source, result.language);
   if (symbols.length === 0) {
     return {
       ...result,
@@ -66,6 +64,7 @@ function attachExportFidelity(
         symbolsPresent: [],
         symbolsMissed: [],
         truthSource,
+        dynamicExportsSuspected,
       },
     };
   }
@@ -78,6 +77,7 @@ function attachExportFidelity(
       symbolsPresent: scored.symbolsPresent,
       symbolsMissed: scored.symbolsMissed,
       truthSource,
+      dynamicExportsSuspected,
     },
   };
 }

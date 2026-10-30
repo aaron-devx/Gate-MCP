@@ -105,6 +105,8 @@ export interface CompressFileExportFidelity {
   symbolsPresent: string[];
   symbolsMissed: string[];
   truthSource: ExportTruthSource;
+  /** Express-style app[method] forEach loop inferred in truth. */
+  dynamicExportsSuspected?: boolean;
 }
 
 export interface CompressFileResult {

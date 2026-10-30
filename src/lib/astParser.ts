@@ -15,6 +15,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import logger from "./logger.js";
+import { augmentSignatureWithPrototypeMethods } from "./prototypeExports.js";
 import type { FileSignature, SupportedLanguage } from "../types.js";
 import { GATEMCP_VERSION } from "../version.js";
 
@@ -308,7 +309,7 @@ export function extractSignatures(
     // semantic export status. React's npm shim files are 100% CJS. Augment.
     if (language === "javascript" || language === "typescript" || language === "tsx") {
       augmentWithCjsExports(source, result);
-      augmentWithPrototypeMethods(source, result);
+      augmentSignatureWithPrototypeMethods(source, result);
     }
 
     return result;
@@ -344,31 +345,6 @@ function augmentWithCjsExports(source: string, result: FileSignature): void {
     result.exports.push("module.exports = ...");
   }
 }
-
-/** Express-style `app.use = function` / `res.send = function` public surface. */
-const PROTO_METHOD_ASSIGN_RE =
-  /^[\t ]*([A-Za-z_$][\w$]{1,})\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function/gm;
-const PROTO_RECEIVER_SKIP = new Set([
-  "module",
-  "exports",
-  "require",
-  "Object",
-  "Function",
-  "Number",
-  "String",
-  "Array",
-  "Boolean",
-]);
-
-function augmentWithPrototypeMethods(source: string, result: FileSignature): void {
-  PROTO_METHOD_ASSIGN_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = PROTO_METHOD_ASSIGN_RE.exec(source)) !== null) {
-    if (PROTO_RECEIVER_SKIP.has(m[1])) continue;
-    result.functions.push(`${m[1]}.${m[2]}(...)`);
-  }
-}
-
 
 /**
  * Parse a source string via tree-sitter's chunk-callback API.
@@ -1018,7 +994,7 @@ function extractSignaturesRegex(
       const protoMatch = trimmed.match(
         /^([A-Za-z_$][\w$]{1,})\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function/
       );
-      if (protoMatch && !PROTO_RECEIVER_SKIP.has(protoMatch[1])) {
+      if (protoMatch) {
         functions.push(`${protoMatch[1]}.${protoMatch[2]}(...)`);
       }
     }
@@ -1030,7 +1006,7 @@ function extractSignaturesRegex(
     language === "tsx"
   ) {
     augmentWithCjsExports(source, { imports, exports, functions, classes });
-    augmentWithPrototypeMethods(source, { imports, exports, functions, classes });
+    augmentSignatureWithPrototypeMethods(source, { imports, exports, functions, classes });
   }
 
   return { imports, exports, functions, classes };
