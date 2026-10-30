@@ -117,6 +117,7 @@ async function runTests(): Promise<void> {
       "cjs.js",
       "reexport-barrel.ts",
       "express-index.js",
+      "prototype-app.js",
     ];
     const RECALL_THRESHOLD = 0.95;
     for (const name of fixtureFiles) {
@@ -1342,7 +1343,7 @@ async function runTests(): Promise<void> {
       !config.args
         .find((arg) => arg.startsWith("--allow-scripts="))
         ?.includes("better-sqlite3") ||
-      !config.args.includes("--package=@gatemcp/cli@0.5.9") ||
+      !config.args.includes("--package=@gatemcp/cli@0.5.10") ||
       config.args.slice(-2).join(" ") !== "-- gatemcp"
     ) {
       throw new Error("plugin server command is not an explicit pinned npm exec");
@@ -1773,8 +1774,8 @@ async function runTests(): Promise<void> {
     if (init.toolMode !== "catalog" && init.toolMode !== "full") {
       throw new Error(`unexpected toolMode ${init.toolMode}`);
     }
-    if (init.version !== "0.5.9") {
-      throw new Error(`expected version 0.5.9 got ${init.version}`);
+    if (init.version !== "0.5.10") {
+      throw new Error(`expected version 0.5.10 got ${init.version}`);
     }
     console.error(`  ${PASS} toolMode=${init.toolMode} version=${init.version}`);
     passed++;

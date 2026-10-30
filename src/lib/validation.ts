@@ -233,6 +233,31 @@ function augmentAstPublicMembers(
   }
 }
 
+
+function extractPrototypeAssignmentSymbols(source: string): Set<string> {
+  const symbols = new Set<string>();
+  const stripped = stripSourceComments(source);
+  const re =
+    /^\s*([A-Za-z_$][\w$]{1,})\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function/gm;
+  const skip = new Set([
+    "module",
+    "exports",
+    "require",
+    "Object",
+    "Function",
+    "Number",
+    "String",
+    "Array",
+    "Boolean",
+  ]);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stripped)) !== null) {
+    if (skip.has(m[1]) || isExportTruthNoise(m[2])) continue;
+    symbols.add(`${m[1]}.${m[2]}`);
+  }
+  return symbols;
+}
+
 function extractExportBlockSymbols(source: string): Set<string> {
   const symbols = new Set<string>();
   const stripped = stripSourceComments(source);
@@ -287,13 +312,14 @@ export function buildExportTruthFromSource(
   const cjsSymbols = extractCjsPatternSymbols(source);
   const blockSymbols = extractExportBlockSymbols(source);
   const esmRegexSymbols = extractEsmDeclarationSymbols(source);
+  const protoSymbols = extractPrototypeAssignmentSymbols(source);
   const merged = new Set<string>([
     ...astSymbols,
     ...cjsSymbols,
     ...blockSymbols,
     ...esmRegexSymbols,
+    ...protoSymbols,
   ]);
-  augmentAstPublicMembers(signature, merged);
 
   let truthSource: ExportTruthSource;
   if (merged.size === 0) truthSource = "none";
@@ -323,6 +349,18 @@ function exportSymbolPresentInCompressedView(
   compressed: string,
   sym: string
 ): boolean {
+  if (sym.includes(".")) {
+    const [recv, method] = sym.split(".", 2);
+    if (
+      recv &&
+      method &&
+      new RegExp(
+        `\\b${escapeRegex(recv)}\\.${escapeRegex(method)}\\b`
+      ).test(compressed)
+    ) {
+      return true;
+    }
+  }
   if (exportSymbolBoundaryRegex(sym).test(compressed)) return true;
   const escaped = escapeRegex(sym);
   const cjsMember = sym.startsWith("$")
