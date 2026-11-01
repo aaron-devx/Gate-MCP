@@ -63,3 +63,5 @@ src/scale-test.ts
 src/scripts/cursor-llm-test.ts
 
 # Last reviewed: 2026-05-17 — public repo = product + tests + documented scripts only.
+
+brainstorms/

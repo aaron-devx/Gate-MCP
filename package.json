@@ -1,6 +1,6 @@
 {
   "name": "@gatemcp/cli",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Local context compression and repository navigation for MCP clients, with per-result measurements, multi-language AST views, graphs, TOON, and OCR.",
   "type": "module",
   "main": "dist/main.js",
@@ -25,7 +25,8 @@
     "assets/gatemcp-logo.png",
     "assets/gatemcp-compress.gif",
     "assets/gatemcp-catalog.gif",
-    "assets/gatemcp-benchmark.gif"
+    "assets/gatemcp-benchmark.gif",
+    "plugins/opencode/gate-compact.js"
   ],
   "scripts": {
     "build": "tsc",

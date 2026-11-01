@@ -2,6 +2,7 @@
  * CLI entry points for cache-read projection.
  *
  *   gatemcp cache-stats <transcript.jsonl> [--json]
+ *   gatemcp cache-stats --opencode [session_id] [--json]   (latest session by default)
  *   gatemcp statusline   (Claude Code statusLine command; JSON on stdin)
  */
 
@@ -12,6 +13,7 @@ import {
   type CacheProjection,
 } from "./lib/cacheProjection.js";
 import { readClaudeTranscript } from "./lib/claudeTranscript.js";
+import { readOpencodeSession } from "./lib/opencodeDb.js";
 
 export function projectTranscript(transcriptPath: string): CacheProjection {
   return summarizeTurns(
@@ -46,14 +48,26 @@ export async function runStatusLine(): Promise<void> {
   }
 }
 
-export function runCacheStats(args: readonly string[]): number {
-  const transcriptPath = args.find((arg) => !arg.startsWith("--"));
-  if (!transcriptPath) {
-    process.stderr.write("usage: gatemcp cache-stats <transcript.jsonl> [--json]\n");
-    return 2;
+const CACHE_STATS_USAGE =
+  "usage: gatemcp cache-stats <transcript.jsonl> [--json]\n" +
+  "       gatemcp cache-stats --opencode [session_id] [--json]\n";
+
+function projectFromArgs(args: readonly string[]): CacheProjection | undefined {
+  const target = args.find((arg) => !arg.startsWith("--"));
+  if (args.includes("--opencode")) {
+    const { turns } = readOpencodeSession(undefined, target);
+    return summarizeTurns(turns, projectionOptionsFromEnv());
   }
+  return target ? projectTranscript(target) : undefined;
+}
+
+export function runCacheStats(args: readonly string[]): number {
   try {
-    const projection = projectTranscript(transcriptPath);
+    const projection = projectFromArgs(args);
+    if (!projection) {
+      process.stderr.write(CACHE_STATS_USAGE);
+      return 2;
+    }
     const output = args.includes("--json")
       ? JSON.stringify(projection, null, 2)
       : formatStatusLine(projection);

@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { handleOptimizeImage } from "./tools/optimizeImage.js";
 import { handleCompressFile } from "./tools/compressFile.js";
 import { handleGraphQuery } from "./tools/graphQuery.js";
@@ -40,6 +41,7 @@ import {
   summarizeTurns,
 } from "./lib/cacheProjection.js";
 import { parseClaudeTranscript } from "./lib/claudeTranscript.js";
+import { parseOpencodeMessages, readOpencodeSession } from "./lib/opencodeDb.js";
 
 const DIVIDER = "═".repeat(60);
 const PASS = "✅";
@@ -1351,7 +1353,7 @@ async function runTests(): Promise<void> {
       !config.args
         .find((arg) => arg.startsWith("--allow-scripts="))
         ?.includes("better-sqlite3") ||
-      !config.args.includes("--package=@gatemcp/cli@0.5.11") ||
+      !config.args.includes("--package=@gatemcp/cli@0.5.12") ||
       config.args.slice(-2).join(" ") !== "-- gatemcp"
     ) {
       throw new Error("plugin server command is not an explicit pinned npm exec");
@@ -1782,8 +1784,8 @@ async function runTests(): Promise<void> {
     if (init.toolMode !== "catalog" && init.toolMode !== "full") {
       throw new Error(`unexpected toolMode ${init.toolMode}`);
     }
-    if (init.version !== "0.5.11") {
-      throw new Error(`expected version 0.5.11 got ${init.version}`);
+    if (init.version !== "0.5.12") {
+      throw new Error(`expected version 0.5.12 got ${init.version}`);
     }
     console.error(`  ${PASS} toolMode=${init.toolMode} version=${init.version}`);
     passed++;
@@ -1849,6 +1851,51 @@ async function runTests(): Promise<void> {
       throw new Error("gate_session_stats missing projection fields");
     }
     console.error(`  ${PASS} ${line}`);
+    passed++;
+  } catch (err) {
+    console.error(`  ${FAIL} ${err}`);
+    failed++;
+  }
+
+  // ── Test 49: OpenCode adapter (session_message rows → TurnUsage) ──
+  console.error(`\n${INFO} Test 49: OpenCode usage adapter`);
+  try {
+    const row = (tokens: unknown): string => JSON.stringify({ role: "assistant", tokens });
+    const turns = parseOpencodeMessages([
+      row({ input: 10, output: 20, reasoning: 5, cache: { read: 1000, write: 90 } }),
+      "{not json",
+      JSON.stringify({ role: "assistant" }), // no tokens yet (still streaming)
+      row({ input: 4, output: 1, cache: { read: 1200 } }),
+    ]);
+    if (turns.length !== 2) throw new Error(`expected 2 turns got ${turns.length}`);
+    if (turns[0].outputTokens !== 25) throw new Error("reasoning not counted as output");
+    if (turns[1].cacheWriteTokens !== 0 || turns[1].cacheReadTokens !== 1200) {
+      throw new Error("missing cache.write not defaulted to 0");
+    }
+
+    // Real db round-trip: read-only open, latest top-level session.
+    const dbPath = path.join(os.tmpdir(), `gate-opencode-${process.pid}.db`);
+    const Database = createRequire(import.meta.url)("better-sqlite3") as typeof import("better-sqlite3");
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT);
+      CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+        seq INTEGER, time_created INTEGER, data TEXT);`);
+    db.prepare("INSERT INTO session_v2 VALUES (?, ?)").run("main", null);
+    db.prepare("INSERT INTO session_v2 VALUES (?, ?)").run("child", "main");
+    const insert = db.prepare("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)");
+    insert.run("m1", "main", "assistant", 1, 100, row({ input: 1, output: 1, cache: { read: 500, write: 0 } }));
+    insert.run("m2", "main", "user", 2, 101, JSON.stringify({ text: "hi" }));
+    insert.run("m3", "main", "assistant", 3, 102, row({ input: 1, output: 1, cache: { read: 600, write: 0 } }));
+    insert.run("c1", "child", "assistant", 1, 999, row({ input: 1, output: 1, cache: { read: 9e6, write: 0 } }));
+    db.close();
+    try {
+      const usage = readOpencodeSession(dbPath);
+      if (usage.sessionId !== "main") throw new Error(`picked subagent session ${usage.sessionId}`);
+      if (summarizeTurns(usage.turns).contextTokens !== 601) throw new Error("wrong context from db");
+    } finally {
+      fs.rmSync(dbPath, { force: true });
+    }
+    console.error(`  ${PASS} ${turns.length} parsed, latest top-level session read`);
     passed++;
   } catch (err) {
     console.error(`  ${FAIL} ${err}`);
