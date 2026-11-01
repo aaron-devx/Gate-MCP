@@ -51,6 +51,7 @@ import { resolveCodeRoot } from "./lib/projectRoot.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { formatDoctorReport, runDoctor } from "./doctor.js";
+import { runCacheStats, runStatusLine } from "./cacheStatsCli.js";
 
 // ─── Server initialization ─────────────────────────────────────────────────
 
@@ -549,6 +550,16 @@ async function main(): Promise<void> {
     closeCacheDb();
     closeAllMemoryDbs();
     process.exitCode = report.ok ? 0 : 1;
+    return;
+  }
+
+  if (process.argv[2] === "statusline") {
+    await runStatusLine();
+    return;
+  }
+
+  if (process.argv[2] === "cache-stats") {
+    process.exitCode = runCacheStats(process.argv.slice(3));
     return;
   }
 

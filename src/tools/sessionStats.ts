@@ -12,6 +12,11 @@ import logger from "../lib/logger.js";
 import { GATEMCP_VERSION } from "../version.js";
 import { getSessionMeasurements } from "../lib/sessionMetrics.js";
 import { TOOL_PAYLOAD_BILLING_SCOPE } from "../lib/tokenCounter.js";
+import {
+  DEFAULT_REMAINING_TURNS,
+  projectCompoundedSaving,
+  projectionOptionsFromEnv,
+} from "../lib/cacheProjection.js";
 
 export interface SessionStatsResult {
   version: string;
@@ -35,6 +40,13 @@ export interface SessionStatsResult {
   cache_hits: number;
   elapsed_ms: number;
   session_elapsed_ms: number;
+  /** Future requests assumed for projected_cache_read_saving. */
+  projection_turns_assumed: number;
+  /**
+   * (estimated_tokens_before − estimated_tokens_after) × projection_turns_assumed.
+   * Tokens kept out of context are re-read on every later request; estimate only.
+   */
+  projected_cache_read_saving: number;
   topEntries: Array<{
     filePath: string;
     hitCount: number;
@@ -51,6 +63,8 @@ export async function handleSessionStats(args: {
   const cachePartition = resolveCachePartitionRoot();
   const stats = getScopedStats(projectRoot);
   const session = getSessionMeasurements();
+  const { remainingTurns } = projectionOptionsFromEnv();
+  const projectionTurns = remainingTurns ?? DEFAULT_REMAINING_TURNS;
   const backend = isPersistent(cachePartition) ? "SQLite" : "memory";
 
   const note =
@@ -84,6 +98,11 @@ export async function handleSessionStats(args: {
     cache_hits: session.cacheHits,
     elapsed_ms: Math.round(session.elapsedMs * 100) / 100,
     session_elapsed_ms: session.sessionElapsedMs,
+    projection_turns_assumed: projectionTurns,
+    projected_cache_read_saving: projectCompoundedSaving(
+      session.estimatedTokensBefore - session.estimatedTokensAfter,
+      projectionTurns
+    ),
     topEntries: stats.entries.slice(0, 10),
     note,
   };

@@ -33,6 +33,13 @@ import {
   _resetMemoryDbForTests,
 } from "./lib/memoryDb.js";
 import { canonicalizePath } from "./lib/pathGuard.js";
+import {
+  classifyContext,
+  formatStatusLine,
+  projectCompoundedSaving,
+  summarizeTurns,
+} from "./lib/cacheProjection.js";
+import { parseClaudeTranscript } from "./lib/claudeTranscript.js";
 
 const DIVIDER = "═".repeat(60);
 const PASS = "✅";
@@ -1779,6 +1786,69 @@ async function runTests(): Promise<void> {
       throw new Error(`expected version 0.5.11 got ${init.version}`);
     }
     console.error(`  ${PASS} toolMode=${init.toolMode} version=${init.version}`);
+    passed++;
+  } catch (err) {
+    console.error(`  ${FAIL} ${err}`);
+    failed++;
+  }
+
+  // ── Test 48: cache-read projection over Claude Code transcript ──
+  console.error(`\n${INFO} Test 48: cache-read projection (Claude Code transcript)`);
+  try {
+    const usageLine = (
+      id: string | undefined,
+      usage: Record<string, number>,
+      extra: Record<string, unknown> = {}
+    ): string =>
+      JSON.stringify({
+        type: "assistant",
+        ...extra,
+        message: { ...(id ? { id } : {}), usage },
+      });
+    const jsonl = [
+      JSON.stringify({ type: "user", message: { content: "hi" } }),
+      usageLine("a", { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 90, output_tokens: 20 }),
+      // Streamed blocks repeat the same message id; last one wins.
+      usageLine("b", { input_tokens: 5, cache_read_input_tokens: 1100, cache_creation_input_tokens: 95, output_tokens: 1 }),
+      usageLine("b", { input_tokens: 5, cache_read_input_tokens: 1100, cache_creation_input_tokens: 95, output_tokens: 50 }),
+      usageLine("s", { input_tokens: 1, cache_read_input_tokens: 999_999, output_tokens: 1 }, { isSidechain: true }),
+      '{"type":"assistant","message":{"usage":', // partial write
+      usageLine(undefined, { input_tokens: 0, cache_read_input_tokens: 1300, output_tokens: 30 }),
+    ].join("\n");
+
+    const turns = parseClaudeTranscript(jsonl);
+    if (turns.length !== 3) throw new Error(`expected 3 turns got ${turns.length}`);
+    if (turns[1].outputTokens !== 50) throw new Error("duplicate id did not keep last line");
+
+    const projection = summarizeTurns(turns, { remainingTurns: 2 });
+    const expected = {
+      contextTokens: 1300,
+      avgGrowthPerTurn: 100,
+      totalCacheReadTokens: 3400,
+      totalOutputTokens: 100,
+      projectedCacheReadTokens: 2900, // 2×1300 + 100×(1+2)
+      warnLevel: "ok",
+    };
+    for (const [key, value] of Object.entries(expected)) {
+      const actual = projection[key as keyof typeof projection];
+      if (actual !== value) throw new Error(`${key}: expected ${value} got ${actual}`);
+    }
+    if (classifyContext(130_000) !== "compact" || classifyContext(170_000) !== "clear") {
+      throw new Error("default thresholds misclassified");
+    }
+    if (projectCompoundedSaving(500, 20) !== 10_000) {
+      throw new Error("compounded saving math wrong");
+    }
+    if (summarizeTurns([]).contextTokens !== 0) throw new Error("empty session not zero");
+    const line = formatStatusLine({ ...projection, warnLevel: "compact" });
+    if (!line.includes("ctx 1k") || !line.includes("/compact")) {
+      throw new Error(`unexpected status line: ${line}`);
+    }
+    const stats = await handleSessionStats({});
+    if (typeof stats.projected_cache_read_saving !== "number" || stats.projection_turns_assumed <= 0) {
+      throw new Error("gate_session_stats missing projection fields");
+    }
+    console.error(`  ${PASS} ${line}`);
     passed++;
   } catch (err) {
     console.error(`  ${FAIL} ${err}`);
